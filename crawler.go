@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 func Crawl(
 	ctx context.Context,
 	startLinks []*url.URL,
 	opts Options,
-) (workResults []Result, err error) {
+) (report Report, err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("crawler: %w", err)
@@ -20,21 +21,27 @@ func Crawl(
 	}()
 
 	if err = opts.Validate(); err != nil {
-		return nil, err
+		return report, err
 	}
 
+	report.StopReason = CompletedReason
+
 	seen := make(map[string]struct{})
-	links := admitLinks(startLinks, seen, opts.MaxPages)
+	links, _ := admitLinks(startLinks, seen, opts.MaxPages)
 
 	client := opts.Client
 	if client == nil {
 		client = http.DefaultClient
 	}
 
+	start := time.Now()
+
+loop:
 	for depth := 0; len(links) > 0; depth++ {
 		select {
 		case <-ctx.Done():
-			return workResults, ctx.Err()
+			report.StopReason = CanceledReason
+			break loop
 		default:
 		}
 
@@ -44,7 +51,7 @@ func Crawl(
 			return worker(timeoutCtx, client, link, opts.MaxBodyBytes)
 		}
 
-		results, rawLinks, err := workersRunner(
+		res, rawLinks, succeeded, err := workersRunner(
 			ctx,
 			opts.Concurrency,
 			links,
@@ -52,20 +59,30 @@ func Crawl(
 			w,
 		)
 
-		workResults = append(workResults, results...)
+		report.Results = append(report.Results, res...)
+		report.Succeeded += succeeded
 
 		if err != nil {
-			return workResults, err
+			report.StopReason = CanceledReason
+			break loop
 		}
-
 		if depth == opts.MaxDepth {
-			break
+			break loop
 		}
 
 		remainingSlots := opts.MaxPages - len(seen)
-		newLinks := admitLinks(rawLinks, seen, remainingSlots)
+		newLinks, exceeded := admitLinks(rawLinks, seen, remainingSlots)
+
+		if exceeded {
+			report.StopReason = MaxPagesReason
+		}
+
 		links = newLinks
 	}
 
-	return workResults, nil
+	report.Duration = time.Since(start)
+	report.Started = len(report.Results)
+	report.Failed = report.Started - report.Succeeded
+
+	return report, ctx.Err()
 }

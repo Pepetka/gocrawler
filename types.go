@@ -23,6 +23,23 @@ const (
 	GB
 )
 
+type StopReason string
+
+const (
+	CompletedReason StopReason = "completed"
+	MaxPagesReason  StopReason = "max-pages"
+	CanceledReason  StopReason = "canceled"
+)
+
+type Report struct {
+	Results    []Result
+	Started    int
+	Succeeded  int
+	Failed     int
+	Duration   time.Duration
+	StopReason StopReason
+}
+
 type Result struct {
 	URL         *url.URL
 	FinalURL    *url.URL

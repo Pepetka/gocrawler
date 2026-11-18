@@ -18,7 +18,7 @@ var (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprint(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, err)
 		if errors.Is(err, errInput) {
 			os.Exit(2)
 		} else {
@@ -36,15 +36,13 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	results, err := gocrawler.Crawl(ctx, startLinks, opts)
+	report, err := gocrawler.Crawl(ctx, startLinks, opts)
 	var pagesErr error
-	for _, wr := range results {
-		if wr.Err != nil {
-			pagesErr = errPages
-		}
+	if report.Failed > 0 {
+		pagesErr = errPages
 	}
 
-	printResults(results)
+	writeErr := writeReport(os.Stdout, report)
 
-	return errors.Join(err, pagesErr)
+	return errors.Join(err, pagesErr, writeErr)
 }

@@ -13,14 +13,14 @@ func workersRunner(
 	links []*url.URL,
 	depth int,
 	worker func(link *url.URL) workerResult,
-) ([]Result, []*url.URL, error) {
+) ([]Result, []*url.URL, int, error) {
 	in, wgSub := distributor(ctx, links)
 
 	out := runner(ctx, wgSub, concurrency, in, worker)
 
-	results, newLinks := collector(out, wgSub, depth)
+	results, newLinks, succeeded := collector(out, wgSub, depth)
 
-	return results, newLinks, ctx.Err()
+	return results, newLinks, succeeded, ctx.Err()
 }
 
 func distributor(ctx context.Context, links []*url.URL) (<-chan *url.URL, *sync.WaitGroup) {
@@ -86,14 +86,18 @@ func runner(ctx context.Context, wgSub *sync.WaitGroup, concurrency int, in <-ch
 	return out
 }
 
-func collector(out <-chan workerResult, wg *sync.WaitGroup, depth int) ([]Result, []*url.URL) {
+func collector(out <-chan workerResult, wg *sync.WaitGroup, depth int) ([]Result, []*url.URL, int) {
 	links := make([]*url.URL, 0)
 	results := make([]Result, 0)
+	succeeded := 0
 	for wr := range out {
 		wr.Depth = depth
 		links = append(links, wr.links...)
 		results = append(results, wr.Result)
+		if wr.Err == nil {
+			succeeded++
+		}
 	}
 	wg.Wait()
-	return results, links
+	return results, links, succeeded
 }
