@@ -92,7 +92,12 @@ loop:
 	report.Started = len(report.Results)
 	report.Failed = report.Started - report.Succeeded
 
-	return report, ctx.Err()
+	err = ctx.Err()
+	if err != nil {
+		report.StopReason = CanceledReason
+	}
+
+	return report, err
 }
 
 func buildClient(external *http.Client, allowedOrigins map[string]struct{}) *http.Client {

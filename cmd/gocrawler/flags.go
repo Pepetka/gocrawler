@@ -12,11 +12,11 @@ import (
 func parseOpts() (gocrawler.Options, []*url.URL, error) {
 	opts := gocrawler.Options{}
 	flag.IntVar(&opts.Concurrency, "concurrency", 5, "number of parallel workers")
-	flag.DurationVar(&opts.Timeout, "duration", 5*time.Second, "working time limitation")
+	flag.DurationVar(&opts.Timeout, "timeout", 5*time.Second, "working time limitation for one page")
 	flag.IntVar(&opts.MaxDepth, "max-depth", 2, "maximum depth")
 	flag.IntVar(&opts.MaxPages, "max-pages", 100, "maximum number of pages")
 	var maxBodyBytes uint64
-	flag.Uint64Var(&maxBodyBytes, "max-body-bytes", uint64(2*gocrawler.MB), "maximum number of pages")
+	flag.Uint64Var(&maxBodyBytes, "max-body-bytes", uint64(2*gocrawler.MB), "maximum page body size in bytes")
 	flag.Parse()
 
 	opts.MaxBodyBytes = gocrawler.ByteSize(maxBodyBytes)

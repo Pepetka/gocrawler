@@ -17,7 +17,7 @@ func worker(ctx context.Context, client *http.Client, link *url.URL, maxBodyByte
 		return wr
 	}
 
-	links, err := parseHTML(r, wr.FinalURL)
+	links, err := parseHTML(ctx, r, wr.FinalURL)
 	if err != nil {
 		wr.Err = err
 		return wr
@@ -58,36 +58,40 @@ func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyByt
 	wr.StatusCode = resp.StatusCode
 	wr.ContentType = contentType
 
-	var buf bytes.Buffer
-	lr := io.LimitReader(resp.Body, maxBodyBytes+1)
-	bytesRead, err := buf.ReadFrom(lr)
-	wr.BytesRead = bytesRead
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		wr.Err = ErrNotOkResponse
+	}
 
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	isHTML := err == nil && mediaType == "text/html"
+	if isHTML {
+		charset, ok := params["charset"]
+		if ok && strings.ToLower(charset) != "utf-8" {
+			wr.Err = errors.Join(wr.Err, ErrUnsupportedCharset)
+		}
+	}
+
+	var buf bytes.Buffer
+	var dst io.Writer = &buf
+	discard := !isHTML || wr.Err != nil
+	if discard {
+		dst = io.Discard
+	}
+	lr := io.LimitReader(resp.Body, maxBodyBytes+1)
+	bytesRead, err := io.Copy(dst, lr)
+	wr.BytesRead = bytesRead
 	if err != nil {
-		wr.Err = err
+		wr.Err = errors.Join(wr.Err, err)
 	}
 	if bytesRead > maxBodyBytes {
 		wr.Err = errors.Join(wr.Err, ErrTooLargeBody)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		wr.Err = errors.Join(wr.Err, ErrNotOkResponse)
 	}
 	if wr.Err != nil {
 		return wr, nil
 	}
 
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	charset, ok := params["charset"]
-	if err != nil {
+	if discard {
 		return wr, nil
 	}
-	if mediaType != "text/html" {
-		return wr, nil
-	}
-	if ok && strings.ToLower(charset) != "utf-8" {
-		wr.Err = ErrUnsupportedCharset
-		return wr, nil
-	}
-
 	return wr, &buf
 }
