@@ -1,18 +1,27 @@
-// Package gocrawler.
+// Package gocrawler crawls HTTP and HTTPS URLs concurrently, one link depth at a time.
+// It follows links and redirects within the origins of the seed URLs.
+// An origin consists of the scheme, hostname, and effective port.
 package gocrawler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 )
 
+// Crawl starts a crawl from seedURLs using opts. Seed URLs must be absolute HTTP
+// or HTTPS URLs with a hostname. An empty seed list is allowed.
+//
+// Invalid options or seed URLs cause Crawl to return an error wrapping
+// [ErrInvalidInput] before making any requests. If ctx is canceled or its deadline
+// expires, Crawl returns the results collected so far and an error wrapping ctx.Err().
+// Errors for individual pages are recorded in [PageResult.Err].
+// Crawl extracts links from successful text/html responses.
 func Crawl(
 	ctx context.Context,
-	startLinks []*url.URL,
+	seedURLs []*url.URL,
 	opts Options,
 ) (report Report, err error) {
 	defer func() {
@@ -22,23 +31,23 @@ func Crawl(
 	}()
 
 	if err = opts.Validate(); err != nil {
-		return report, fmt.Errorf("%w: %w", ErrInput, err)
+		return report, fmt.Errorf("%w: %w", ErrInvalidInput, err)
 	}
 
-	allowedOrigins, err := buildAllowedOrigins(startLinks)
+	allowedOrigins, err := seedOrigins(seedURLs)
 	if err != nil {
-		return report, fmt.Errorf("%w: %w", ErrInput, err)
+		return report, fmt.Errorf("%w: %w", ErrInvalidInput, err)
 	}
 
 	seen := make(map[string]struct{})
-	links, exceeded := admitLinks(startLinks, seen, opts.MaxPages)
+	links, exceeded := admitURLs(seedURLs, seen, opts.MaxPages)
 	if exceeded {
-		return report, fmt.Errorf("%w: %w", ErrInput, errors.New("number of unique URLs is greater than max-pages"))
+		return report, fmt.Errorf("%w: unique seed URLs exceed the max-pages limit of %d", ErrInvalidInput, opts.MaxPages)
 	}
 
-	report.StopReason = CompletedReason
+	report.StopReason = ReasonCompleted
 
-	client := buildClient(opts.Client, allowedOrigins)
+	client := newCrawlClient(opts.HTTPClient, allowedOrigins)
 
 	start := time.Now()
 
@@ -46,18 +55,18 @@ loop:
 	for depth := 0; len(links) > 0; depth++ {
 		select {
 		case <-ctx.Done():
-			report.StopReason = CanceledReason
+			report.StopReason = ReasonContextDone
 			break loop
 		default:
 		}
 
-		w := func(link *url.URL) workerResult {
-			timeoutCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+		w := func(link *url.URL) pageResultWithLinks {
+			timeoutCtx, cancel := context.WithTimeout(ctx, opts.PageTimeout)
 			defer cancel()
-			return worker(timeoutCtx, client, link, opts.MaxBodyBytes)
+			return processPage(timeoutCtx, client, link, opts.MaxBodyBytes)
 		}
 
-		res, rawLinks, succeeded, err := workersRunner(
+		res, rawLinks, succeeded, err := crawlLevel(
 			ctx,
 			opts.Concurrency,
 			links,
@@ -69,20 +78,20 @@ loop:
 		report.Succeeded += succeeded
 
 		if err != nil {
-			report.StopReason = CanceledReason
+			report.StopReason = ReasonContextDone
 			break loop
 		}
 		if depth == opts.MaxDepth {
 			break loop
 		}
 
-		allowed := filterByAllowed(allowedOrigins, rawLinks)
+		allowed := filterByOrigin(allowedOrigins, rawLinks)
 
 		remainingSlots := opts.MaxPages - len(seen)
-		newLinks, exceeded := admitLinks(allowed, seen, remainingSlots)
+		newLinks, exceeded := admitURLs(allowed, seen, remainingSlots)
 
 		if exceeded {
-			report.StopReason = MaxPagesReason
+			report.StopReason = ReasonPageLimit
 		}
 
 		links = newLinks
@@ -94,13 +103,13 @@ loop:
 
 	err = ctx.Err()
 	if err != nil {
-		report.StopReason = CanceledReason
+		report.StopReason = ReasonContextDone
 	}
 
 	return report, err
 }
 
-func buildClient(external *http.Client, allowedOrigins map[string]struct{}) *http.Client {
+func newCrawlClient(external *http.Client, allowedOrigins map[string]struct{}) *http.Client {
 	base := external
 	if base == nil {
 		base = http.DefaultClient
@@ -113,9 +122,10 @@ func buildClient(external *http.Client, allowedOrigins map[string]struct{}) *htt
 		Timeout:   base.Timeout,
 	}
 
+	const maxRequestsPerPage = 10
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return ErrTooManyRedirects
+		if len(via) >= maxRequestsPerPage {
+			return fmt.Errorf("%w: at most %d HTTP requests per page, including the initial request", ErrTooManyRedirects, maxRequestsPerPage)
 		}
 
 		if externalCheck != nil {
@@ -129,7 +139,7 @@ func buildClient(external *http.Client, allowedOrigins map[string]struct{}) *htt
 			return err
 		}
 		if _, ok := allowedOrigins[destOrigin]; !ok {
-			return ErrDisallowRedirect
+			return ErrRedirectOutsideAllowedOrigins
 		}
 		return nil
 	}

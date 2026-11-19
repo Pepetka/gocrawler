@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -11,15 +12,15 @@ import (
 	"strings"
 )
 
-func worker(ctx context.Context, client *http.Client, link *url.URL, maxBodyBytes ByteSize) workerResult {
-	wr, r := getHTML(ctx, client, link, int64(maxBodyBytes))
+func processPage(ctx context.Context, client *http.Client, link *url.URL, maxBodyBytes ByteSize) pageResultWithLinks {
+	wr, r := fetchPage(ctx, client, link, int64(maxBodyBytes))
 	if r == nil {
 		return wr
 	}
 
-	links, err := parseHTML(ctx, r, wr.FinalURL)
+	links, err := extractLinks(ctx, r, wr.ResponseURL)
 	if err != nil {
-		wr.Err = err
+		wr.Err = fmt.Errorf("extract links from HTML: %w", err)
 		return wr
 	}
 
@@ -27,14 +28,14 @@ func worker(ctx context.Context, client *http.Client, link *url.URL, maxBodyByte
 	return wr
 }
 
-func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyBytes int64) (workerResult, io.Reader) {
-	wr := workerResult{
-		URL: link,
+func fetchPage(ctx context.Context, client *http.Client, link *url.URL, maxBodyBytes int64) (pageResultWithLinks, io.Reader) {
+	wr := pageResultWithLinks{
+		PageResult: PageResult{RequestedURL: link},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link.String(), nil)
 	if err != nil {
-		wr.Err = err
+		wr.Err = fmt.Errorf("create HTTP request: %w", err)
 		return wr, nil
 	}
 
@@ -42,7 +43,7 @@ func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyByt
 	if err != nil {
 		wr.Err = err
 		if resp != nil {
-			wr.FinalURL = resp.Request.URL
+			wr.ResponseURL = resp.Request.URL
 			wr.StatusCode = resp.StatusCode
 			wr.ContentType = resp.Header.Get("Content-Type")
 		}
@@ -54,12 +55,12 @@ func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyByt
 
 	contentType := resp.Header.Get("Content-Type")
 
-	wr.FinalURL = resp.Request.URL
+	wr.ResponseURL = resp.Request.URL
 	wr.StatusCode = resp.StatusCode
 	wr.ContentType = contentType
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		wr.Err = ErrNotOkResponse
+		wr.Err = fmt.Errorf("%w %d (expected 2xx)", ErrUnexpectedHTTPStatus, resp.StatusCode)
 	}
 
 	mediaType, params, err := mime.ParseMediaType(contentType)
@@ -67,7 +68,7 @@ func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyByt
 	if isHTML {
 		charset, ok := params["charset"]
 		if ok && strings.ToLower(charset) != "utf-8" {
-			wr.Err = errors.Join(wr.Err, ErrUnsupportedCharset)
+			wr.Err = errors.Join(wr.Err, fmt.Errorf("%w %q (expected UTF-8)", ErrUnsupportedHTMLCharset, charset))
 		}
 	}
 
@@ -79,12 +80,12 @@ func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyByt
 	}
 	lr := io.LimitReader(resp.Body, maxBodyBytes+1)
 	bytesRead, err := io.Copy(dst, lr)
-	wr.BytesRead = bytesRead
+	wr.BodyBytesRead = bytesRead
 	if err != nil {
-		wr.Err = errors.Join(wr.Err, err)
+		wr.Err = errors.Join(wr.Err, fmt.Errorf("read response body: %w", err))
 	}
 	if bytesRead > maxBodyBytes {
-		wr.Err = errors.Join(wr.Err, ErrTooLargeBody)
+		wr.Err = errors.Join(wr.Err, fmt.Errorf("%w: limit is %d bytes (read %d bytes)", ErrBodyTooLarge, maxBodyBytes, bytesRead))
 	}
 	if wr.Err != nil {
 		return wr, nil

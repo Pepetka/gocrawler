@@ -8,7 +8,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-func parseHTML(ctx context.Context, r io.Reader, base *url.URL) ([]*url.URL, error) {
+func extractLinks(ctx context.Context, r io.Reader, base *url.URL) ([]*url.URL, error) {
 	links := make([]*url.URL, 0)
 
 	if err := checkContext(ctx); err != nil {

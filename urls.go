@@ -8,12 +8,32 @@ import (
 	"strings"
 )
 
-func admitLinks(rawLinks []*url.URL, seen map[string]struct{}, remainingSlots int) ([]*url.URL, bool) {
+// ParseSeedURL parses and validates an absolute HTTP or HTTPS seed URL.
+func ParseSeedURL(raw string) (*url.URL, error) {
+	link, err := parseURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := originOf(link); err != nil {
+		return nil, err
+	}
+	return link, nil
+}
+
+func parseURL(raw string) (*url.URL, error) {
+	link, err := url.Parse(raw)
+	if err != nil {
+		return nil, err.(*url.Error).Err
+	}
+	return link, nil
+}
+
+func admitURLs(rawLinks []*url.URL, seen map[string]struct{}, remainingSlots int) ([]*url.URL, bool) {
 	links := make([]*url.URL, 0, len(rawLinks))
 	slots := 0
 	exceeded := false
 	for _, link := range rawLinks {
-		normalized := normalizeLink(link)
+		normalized := normalizeCrawlURL(link)
 		if normalized == nil {
 			continue
 		}
@@ -31,7 +51,7 @@ func admitLinks(rawLinks []*url.URL, seen map[string]struct{}, remainingSlots in
 	return links, exceeded
 }
 
-func normalizeLink(link *url.URL) *url.URL {
+func normalizeCrawlURL(link *url.URL) *url.URL {
 	l := *link
 	if l.Scheme != "http" && l.Scheme != "https" || l.Hostname() == "" {
 		return nil
@@ -41,19 +61,19 @@ func normalizeLink(link *url.URL) *url.URL {
 	return &l
 }
 
-func buildAllowedOrigins(seeds []*url.URL) (map[string]struct{}, error) {
+func seedOrigins(seeds []*url.URL) (map[string]struct{}, error) {
 	output := make(map[string]struct{})
 	for i, link := range seeds {
 		origin, err := originOf(link)
 		if err != nil {
-			return nil, fmt.Errorf("seed[%d]: %w", i, err)
+			return nil, fmt.Errorf("seed URL %d: %w", i+1, err)
 		}
 		output[origin] = struct{}{}
 	}
 	return output, nil
 }
 
-func filterByAllowed(allowed map[string]struct{}, links []*url.URL) []*url.URL {
+func filterByOrigin(allowed map[string]struct{}, links []*url.URL) []*url.URL {
 	filtered := make([]*url.URL, 0, len(links))
 	for _, link := range links {
 		origin, err := originOf(link)
@@ -69,14 +89,18 @@ func filterByAllowed(allowed map[string]struct{}, links []*url.URL) []*url.URL {
 
 func originOf(link *url.URL) (string, error) {
 	if link == nil {
-		return "", errors.New("nil link")
+		return "", errors.New("URL is nil")
 	}
 
 	host := link.Hostname()
 	scheme := link.Scheme
 	var port uint64
-	if scheme != "http" && scheme != "https" || host == "" {
-		return "", fmt.Errorf("invalid url %s", link)
+	if scheme != "http" && scheme != "https" || host == "" || link.Opaque != "" {
+		return "", errors.New("expected an absolute HTTP or HTTPS URL with a hostname")
+	}
+	// Port returns an empty string for both a missing port and a malformed port.
+	if _, err := parseURL(link.Redacted()); err != nil {
+		return "", err
 	}
 	if link.Port() == "" {
 		if scheme == "https" {
@@ -87,7 +111,7 @@ func originOf(link *url.URL) (string, error) {
 	} else {
 		p, err := strconv.ParseUint(link.Port(), 10, 16)
 		if err != nil {
-			return "", fmt.Errorf("invalid port: %w", err)
+			return "", fmt.Errorf("URL port must be between 0 and 65535: %w", err)
 		}
 		port = p
 	}
