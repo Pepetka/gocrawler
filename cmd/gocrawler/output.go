@@ -12,6 +12,7 @@ import (
 
 func writeReport(w io.Writer, report gocrawler.Report) error {
 	failedResults := make([]gocrawler.Result, 0, len(report.Results))
+	redirectedResults := make([]gocrawler.Result, 0, len(report.Results))
 
 	if len(report.Results) > 0 {
 		tw := tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
@@ -23,6 +24,9 @@ func writeReport(w io.Writer, report gocrawler.Report) error {
 		for _, result := range report.Results {
 			if result.Err != nil {
 				failedResults = append(failedResults, result)
+			}
+			if result.FinalURL != nil && result.URL.String() != result.FinalURL.String() {
+				redirectedResults = append(redirectedResults, result)
 			}
 			status := strconv.Itoa(result.StatusCode)
 			if result.StatusCode == 0 {
@@ -39,6 +43,22 @@ func writeReport(w io.Writer, report gocrawler.Report) error {
 
 		if err := tw.Flush(); err != nil {
 			return err
+		}
+
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
+
+	if len(redirectedResults) > 0 {
+		if _, err := fmt.Fprintln(w, "Redirects:"); err != nil {
+			return err
+		}
+
+		for _, redirectedResult := range redirectedResults {
+			if _, err := fmt.Fprintf(w, "%s -> %s\n", redirectedResult.URL, redirectedResult.FinalURL); err != nil {
+				return err
+			}
 		}
 
 		if _, err := fmt.Fprintln(w); err != nil {

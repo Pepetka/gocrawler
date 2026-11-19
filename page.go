@@ -41,6 +41,11 @@ func getHTML(ctx context.Context, client *http.Client, link *url.URL, maxBodyByt
 	resp, err := client.Do(req)
 	if err != nil {
 		wr.Err = err
+		if resp != nil {
+			wr.FinalURL = resp.Request.URL
+			wr.StatusCode = resp.StatusCode
+			wr.ContentType = resp.Header.Get("Content-Type")
+		}
 		return wr, nil
 	}
 	defer func() {

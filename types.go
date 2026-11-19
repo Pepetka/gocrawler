@@ -9,9 +9,13 @@ import (
 )
 
 var (
+	ErrInput = errors.New("input error")
+
 	ErrNotOkResponse      = errors.New("not ok response")
 	ErrUnsupportedCharset = errors.New("unsupported charset")
 	ErrTooLargeBody       = errors.New("too large body")
+	ErrDisallowRedirect   = errors.New("disallow redirect")
+	ErrTooManyRedirects   = errors.New("too many redirects")
 )
 
 type ByteSize uint64

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -23,7 +22,7 @@ func parseOpts() (gocrawler.Options, []*url.URL, error) {
 	opts.MaxBodyBytes = gocrawler.ByteSize(maxBodyBytes)
 
 	if err := opts.Validate(); err != nil {
-		return opts, nil, errors.Join(errInput, err)
+		return opts, nil, fmt.Errorf("%w: %w", gocrawler.ErrInput, err)
 	}
 
 	args := flag.Args()
@@ -31,7 +30,7 @@ func parseOpts() (gocrawler.Options, []*url.URL, error) {
 	for _, arg := range args {
 		parsed, err := url.Parse(arg)
 		if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Hostname() == "" {
-			return opts, nil, fmt.Errorf("%w: invalid url %s", errInput, parsed)
+			return opts, nil, fmt.Errorf("%w: invalid url %s", gocrawler.ErrInput, parsed)
 		}
 		links = append(links, parsed)
 	}

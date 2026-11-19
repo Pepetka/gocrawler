@@ -3,6 +3,7 @@ package gocrawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,18 +22,23 @@ func Crawl(
 	}()
 
 	if err = opts.Validate(); err != nil {
-		return report, err
+		return report, fmt.Errorf("%w: %w", ErrInput, err)
+	}
+
+	allowedOrigins, err := buildAllowedOrigins(startLinks)
+	if err != nil {
+		return report, fmt.Errorf("%w: %w", ErrInput, err)
+	}
+
+	seen := make(map[string]struct{})
+	links, exceeded := admitLinks(startLinks, seen, opts.MaxPages)
+	if exceeded {
+		return report, fmt.Errorf("%w: %w", ErrInput, errors.New("number of unique URLs is greater than max-pages"))
 	}
 
 	report.StopReason = CompletedReason
 
-	seen := make(map[string]struct{})
-	links, _ := admitLinks(startLinks, seen, opts.MaxPages)
-
-	client := opts.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := buildClient(opts.Client, allowedOrigins)
 
 	start := time.Now()
 
@@ -70,8 +76,10 @@ loop:
 			break loop
 		}
 
+		allowed := filterByAllowed(allowedOrigins, rawLinks)
+
 		remainingSlots := opts.MaxPages - len(seen)
-		newLinks, exceeded := admitLinks(rawLinks, seen, remainingSlots)
+		newLinks, exceeded := admitLinks(allowed, seen, remainingSlots)
 
 		if exceeded {
 			report.StopReason = MaxPagesReason
@@ -85,4 +93,41 @@ loop:
 	report.Failed = report.Started - report.Succeeded
 
 	return report, ctx.Err()
+}
+
+func buildClient(external *http.Client, allowedOrigins map[string]struct{}) *http.Client {
+	base := external
+	if base == nil {
+		base = http.DefaultClient
+	}
+	externalCheck := base.CheckRedirect
+
+	client := &http.Client{
+		Transport: base.Transport,
+		Jar:       base.Jar,
+		Timeout:   base.Timeout,
+	}
+
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return ErrTooManyRedirects
+		}
+
+		if externalCheck != nil {
+			if err := externalCheck(req, via); err != nil {
+				return err
+			}
+		}
+
+		destOrigin, err := originOf(req.URL)
+		if err != nil {
+			return err
+		}
+		if _, ok := allowedOrigins[destOrigin]; !ok {
+			return ErrDisallowRedirect
+		}
+		return nil
+	}
+
+	return client
 }

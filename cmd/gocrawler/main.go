@@ -11,15 +11,10 @@ import (
 	"github.com/pepetka/gocrawler"
 )
 
-var (
-	errInput = errors.New("cmd: input error")
-	errPages = errors.New("cmd: page processing error")
-)
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		if errors.Is(err, errInput) {
+		if errors.Is(err, gocrawler.ErrInput) {
 			os.Exit(2)
 		} else {
 			os.Exit(1)
@@ -37,9 +32,12 @@ func run() error {
 	defer cancel()
 
 	report, err := gocrawler.Crawl(ctx, startLinks, opts)
+	if errors.Is(err, gocrawler.ErrInput) {
+		return err
+	}
 	var pagesErr error
 	if report.Failed > 0 {
-		pagesErr = errPages
+		pagesErr = errors.New("cmd: page processing error")
 	}
 
 	writeErr := writeReport(os.Stdout, report)
